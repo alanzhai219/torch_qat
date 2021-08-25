@@ -379,6 +379,9 @@ top1, top5 = evaluate(per_channel_quantized_model, criterion, data_loader_test, 
 print('Evaluation accuracy on %d images, %2.2f'%(num_eval_batches * eval_batch_size, top1.avg))
 torch.jit.save(torch.jit.script(per_channel_quantized_model), saved_model_dir + scripted_quantized_model_file)
 
+'''
+############################ QAT ###########################
+'''
 def train_one_epoch(model, criterion, optimizer, data_loader, device, ntrain_batches):
     model.train()
     top1 = AverageMeter('Acc@1', ':6.2f')
@@ -420,9 +423,6 @@ qat_model.qconfig = torch.quantization.get_default_qat_qconfig('fbgemm')
 torch.quantization.prepare_qat(qat_model, inplace=True)
 print('Inverted Residual Block: After preparation for QAT, note fake-quantization modules \n',qat_model.features[1].conv)
 
-'''
-############################ QAT ###########################
-'''
 num_train_batches = 20
 
 # QAT takes time and one needs to train over a few epochs.
