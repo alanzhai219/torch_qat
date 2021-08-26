@@ -255,17 +255,17 @@ def prepare_data_loaders(data_path):
 
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
-    dataset = torchvision.datasets.ImageNet(
-           data_path, split="train",
-         transforms.Compose([
+    dataset = torchvision.datasets.ImageFolder(
+          os.path.join(data_path, "train"),
+              transform=transforms.Compose([
                    transforms.RandomResizedCrop(224),
                    transforms.RandomHorizontalFlip(),
                    transforms.ToTensor(),
                    normalize,
                ]))
-    dataset_test = torchvision.datasets.ImageNet(
-          data_path, split="val",
-              transforms.Compose([
+    dataset_test = torchvision.datasets.ImageFolder(
+          os.path.join(data_path, "val"),
+              transform=transforms.Compose([
                   transforms.Resize(256),
                   transforms.CenterCrop(224),
                   transforms.ToTensor(),
@@ -285,9 +285,9 @@ def prepare_data_loaders(data_path):
 
     return data_loader, data_loader_test
 
-data_path = '~/.data/imagenet'
+data_path = '/data/pytorch/datasets/imagenet_training' # such folder should include train and val.
 saved_model_dir = 'data/'
-float_model_file = 'mobilenet_pretrained_float.pth'
+float_model_file = 'mobilenet_v2-b0353104.pth'#'mobilenet_pretrained_float.pth'
 scripted_float_model_file = 'mobilenet_quantization_scripted.pth'
 scripted_quantized_model_file = 'mobilenet_quantization_scripted_quantized.pth'
 
