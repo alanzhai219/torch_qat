@@ -296,6 +296,12 @@ eval_batch_size = 50
 
 data_loader, data_loader_test = prepare_data_loaders(data_path)
 criterion = nn.CrossEntropyLoss()
+
+'''
+######################## baseline ##########################
+###### 71.9% on the eval dataset of 50,000 images ######
+'''
+print("####### running baseline #######")
 float_model = load_model(saved_model_dir + float_model_file).to('cpu')
 
 # Next, we'll "fuse modules"; this can both make the model faster by saving on memory access
@@ -311,10 +317,6 @@ float_model.fuse_model()
 # Note fusion of Conv+BN+Relu and Conv+Relu
 print('\n Inverted Residual Block: After fusion\n\n',float_model.features[1].conv)
 
-'''
-######################## baseline ##########################
-###### 71.9% on the eval dataset of 50,000 images ######
-'''
 num_calibration_batches = 32
 num_eval_batches = 1000
 
@@ -326,9 +328,10 @@ print('Evaluation accuracy on %d images, %2.2f'%(num_eval_batches * eval_batch_s
 torch.jit.save(torch.jit.script(float_model), saved_model_dir + scripted_float_model_file)
 
 '''
-######################## PTQ ##########################
+######################## PTQ(per-tensor)##########################
 accuracy of 56.7% on the eval dataset
 '''
+print("####### running PTQ(per-tensor) #######")
 num_calibration_batches = 32
 
 myModel = load_model(saved_model_dir + float_model_file).to('cpu')
@@ -349,7 +352,7 @@ print('\n Inverted Residual Block:After observer insertion \n\n', myModel.featur
 
 # Calibrate with the training set
 evaluate(myModel, criterion, data_loader, neval_batches=num_calibration_batches)
-print('Post Training Quantization: Calibration done')
+print('Post Training Quantization(per-tensor): Calibration done')
 
 # Convert to quantized model
 torch.quantization.convert(myModel, inplace=True)
@@ -363,9 +366,10 @@ top1, top5 = evaluate(myModel, criterion, data_loader_test, neval_batches=num_ev
 print('Evaluation accuracy on %d images, %2.2f'%(num_eval_batches * eval_batch_size, top1.avg))
 
 '''
-######################## PerChannel ##########################
+######################## PTQ(per-channel) ##########################
 accuracy to over 67.3% on the eval dataset
 '''
+print("####### running PTQ(per-channel) #######")
 per_channel_quantized_model = load_model(saved_model_dir + float_model_file)
 per_channel_quantized_model.eval()
 per_channel_quantized_model.fuse_model()
@@ -374,6 +378,8 @@ print(per_channel_quantized_model.qconfig)
 
 torch.quantization.prepare(per_channel_quantized_model, inplace=True)
 evaluate(per_channel_quantized_model,criterion, data_loader, num_calibration_batches)
+print('Post Training Quantization(per-channel): Calibration done')
+
 torch.quantization.convert(per_channel_quantized_model, inplace=True)
 top1, top5 = evaluate(per_channel_quantized_model, criterion, data_loader_test, neval_batches=num_eval_batches)
 print('Evaluation accuracy on %d images, %2.2f'%(num_eval_batches * eval_batch_size, top1.avg))
@@ -382,6 +388,7 @@ torch.jit.save(torch.jit.script(per_channel_quantized_model), saved_model_dir + 
 '''
 ############################ QAT ###########################
 '''
+print("####### running QAT #######")
 def train_one_epoch(model, criterion, optimizer, data_loader, device, ntrain_batches):
     model.train()
     top1 = AverageMeter('Acc@1', ':6.2f')
