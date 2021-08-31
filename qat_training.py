@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 import torch.nn as nn
 import torchvision
@@ -10,8 +9,12 @@ import time
 import sys
 import torch.quantization
 
+from MobileNet import *
 # Specify random seed for repeatable results
 # torch.manual_seed(191009)
+
+data_loader = None
+data_loader_test = None 
 
 def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
@@ -86,33 +89,37 @@ def prepare_data_loaders(args):
     train_sampler = torch.utils.data.RandomSampler(dataset)
     test_sampler = torch.utils.data.SequentialSampler(dataset_test)
 
+    global data_loader 
     data_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=train_batch_size,
+        dataset, batch_size=args.train_batch_size,
         sampler=train_sampler, num_workers=args.workers, pin_memory=True)
 
+    global data_loader_test
     data_loader_test = torch.utils.data.DataLoader(
-        dataset_test, batch_size=eval_batch_size,
+        dataset_test, batch_size=args.eval_batch_size,
         sampler=test_sampler, num_workers=args.workers, pin_memory=True)
 
-    return data_loader, data_loader_test
+    return
+    # return data_loader, data_loader_test
 
-data_path = '/data/pytorch/datasets/imagenet_training' # such folder should include train and val.
-saved_model_dir = 'data/'
-float_model_file = 'mobilenet_v2-b0353104.pth'#'mobilenet_pretrained_float.pth'
-scripted_float_model_file = 'mobilenet_quantization_scripted.pth'
-scripted_quantized_model_file = 'mobilenet_quantization_scripted_quantized.pth'
+# data_path = '/data/pytorch/datasets/imagenet_training' # such folder should include train and val.
+# saved_model_dir = 'data/'
+# float_model_file = 'mobilenet_v2-b0353104.pth'#'mobilenet_pretrained_float.pth'
+# scripted_float_model_file = 'mobilenet_quantization_scripted.pth'
+# scripted_quantized_model_file = 'mobilenet_quantization_scripted_quantized.pth'
 
-train_batch_size = 30
-eval_batch_size = 50
+# train_batch_size = 30
+# eval_batch_size = 50
+# num_calibration_batches = 32
+num_eval_batches = 1000
 
-data_loader, data_loader_test = prepare_data_loaders(data_path)
 criterion = nn.CrossEntropyLoss()
 
 '''
 ############################ QAT ###########################
 '''
-print("####### running QAT #######")
 def train_one_epoch(model, criterion, optimizer, data_loader, device, ntrain_batches):
+    print("running training ...")
     model.train()
     top1 = AverageMeter('Acc@1', ':6.2f')
     top5 = AverageMeter('Acc@5', ':6.2f')
@@ -144,17 +151,16 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, ntrain_bat
           .format(top1=top1, top5=top5))
     return
 
-
-def run_benchmark(model_file, img_loader):
+def run_benchmark(args):
     '''
     ####################### benchmark ######################
     '''
     elapsed = 0
-    model = torch.jit.load(model_file)
+    model = torch.jit.load(args.model_name)
     model.eval()
     num_batches = 5
     # Run the scripted model on a few batches of images
-    for i, (images, target) in enumerate(img_loader):
+    for i, (images, target) in enumerate(data_loader_test):
         if i < num_batches:
             start = time.time()
             output = model(images)
@@ -167,9 +173,8 @@ def run_benchmark(model_file, img_loader):
     print('Elapsed time: %3.0f ms' % (elapsed/num_images*1000))
     return elapsed
 
-run_benchmark(saved_model_dir + scripted_float_model_file, data_loader_test)
-
-run_benchmark(saved_model_dir + scripted_quantized_model_file, data_loader_test)
+# run_benchmark(saved_model_dir + scripted_float_model_file)
+# run_benchmark(saved_model_dir + scripted_quantized_model_file)
 
 def run_fp32_baseline(args):
     '''
@@ -177,7 +182,7 @@ def run_fp32_baseline(args):
     ###### 71.9% on the eval dataset of 50,000 images ######
     '''
     print("####### running baseline #######")
-    float_model = load_model(saved_model_dir + float_model_file).to('cpu')
+    float_model = load_model(os.path.join(args.model_path, args.model_file)).to('cpu')
     
     # Next, we'll "fuse modules"; this can both make the model faster by saving on memory access
     # while also improving numerical accuracy. While this can be used with any model, this is
@@ -192,15 +197,12 @@ def run_fp32_baseline(args):
     # Note fusion of Conv+BN+Relu and Conv+Relu
     print('\n Inverted Residual Block: After fusion\n\n',float_model.features[1].conv)
     
-    num_calibration_batches = 32
-    num_eval_batches = 1000
-    
     print("Size of baseline model")
     print_size_of_model(float_model)
     
     top1, top5 = evaluate(float_model, criterion, data_loader_test, neval_batches=num_eval_batches)
-    print('Evaluation accuracy on %d images, %2.2f'%(num_eval_batches * eval_batch_size, top1.avg))
-    torch.jit.save(torch.jit.script(float_model), saved_model_dir + scripted_float_model_file)
+    print('Evaluation accuracy on %d images, %2.2f'%(num_eval_batches * args.eval_batch_size, top1.avg))
+    # torch.jit.save(torch.jit.script(float_model), saved_model_dir + scripted_float_model_file)
 
 def run_ptq_per_tensor(args):
     '''
@@ -208,9 +210,8 @@ def run_ptq_per_tensor(args):
     accuracy of 56.7% on the eval dataset
     '''
     print("####### running PTQ(per-tensor) #######")
-    num_calibration_batches = 32
     
-    myModel = load_model(saved_model_dir + float_model_file).to('cpu')
+    myModel = load_model(os.path.join(args.model_path, args.model_file)).to('cpu')
     myModel.eval()
     
     # Fuse Conv, bn and relu
@@ -218,7 +219,7 @@ def run_ptq_per_tensor(args):
     
     # Specify quantization configuration
     # Start with simple min/max range estimation and per-tensor quantization of weights
-    myModel.qconfig = torch.quantization.default_qconfig
+    myModel.qconfig = torch.quantization.default_qconfig # qnnpack is for per-tensor
     print(myModel.qconfig)
     torch.quantization.prepare(myModel, inplace=True)
     
@@ -227,7 +228,7 @@ def run_ptq_per_tensor(args):
     print('\n Inverted Residual Block:After observer insertion \n\n', myModel.features[1].conv)
     
     # Calibrate with the training set
-    evaluate(myModel, criterion, data_loader, neval_batches=num_calibration_batches)
+    evaluate(myModel, criterion, data_loader, neval_batches=args.num_calibration_batches)
     print('Post Training Quantization(per-tensor): Calibration done')
     
     # Convert to quantized model
@@ -239,7 +240,7 @@ def run_ptq_per_tensor(args):
     print_size_of_model(myModel)
     
     top1, top5 = evaluate(myModel, criterion, data_loader_test, neval_batches=num_eval_batches)
-    print('Evaluation accuracy on %d images, %2.2f'%(num_eval_batches * eval_batch_size, top1.avg))
+    print('Evaluation accuracy on %d images, %2.2f'%(num_eval_batches * args.eval_batch_size, top1.avg))
 
 def run_ptq_per_channel(args):
     '''
@@ -247,37 +248,54 @@ def run_ptq_per_channel(args):
     accuracy to over 67.3% on the eval dataset
     '''
     print("####### running PTQ(per-channel) #######")
-    per_channel_quantized_model = load_model(saved_model_dir + float_model_file)
+    per_channel_quantized_model = load_model(os.path.join(args.model_path, args.model_file)).to('cpu')
     per_channel_quantized_model.eval()
     per_channel_quantized_model.fuse_model()
-    per_channel_quantized_model.qconfig = torch.quantization.get_default_qconfig('fbgemm')
+    per_channel_quantized_model.qconfig = torch.quantization.get_default_qconfig('fbgemm') # fbgemm is for per-channel
     print(per_channel_quantized_model.qconfig)
     
     torch.quantization.prepare(per_channel_quantized_model, inplace=True)
-    evaluate(per_channel_quantized_model,criterion, data_loader, num_calibration_batches)
+    # Calibrate first
+    print('Post Training Quantization(per-channel) Prepare: Inserting Observers')
+    # Calibrate with the training set
+    evaluate(per_channel_quantized_model,criterion, data_loader, args.num_calibration_batches)
     print('Post Training Quantization(per-channel): Calibration done')
     
     torch.quantization.convert(per_channel_quantized_model, inplace=True)
     top1, top5 = evaluate(per_channel_quantized_model, criterion, data_loader_test, neval_batches=num_eval_batches)
-    print('Evaluation accuracy on %d images, %2.2f'%(num_eval_batches * eval_batch_size, top1.avg))
-    torch.jit.save(torch.jit.script(per_channel_quantized_model), saved_model_dir + scripted_quantized_model_file)
+    print('Evaluation accuracy on %d images, %2.2f'%(num_eval_batches * args.eval_batch_size, top1.avg))
+    # torch.jit.save(torch.jit.script(per_channel_quantized_model), saved_model_dir + scripted_quantized_model_file)
 
 def run_qat(args):
-    qat_model = load_model(saved_model_dir + float_model_file)
+    qat_model = load_model(os.path.join(args.model_path, args.model_file)).to('cpu')
     qat_model.fuse_model()
+
+    optimizer = torch.optim.SGD(
+                                qat_model.parameters(),
+                                lr=args.lr,
+                                momentum=args.momentum,
+                                weight_decay=args.weight_decay)
     
-    optimizer = torch.optim.SGD(qat_model.parameters(), lr = 0.0001, momentum=0.9, gamma=0.1)
-    qat_model.qconfig = torch.quantization.get_default_qat_qconfig('fbgemm')
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(
+                                                    optimizer,
+                                                    step_size=args.lr_step_size,
+                                                    gamma=args.lr_gamma)
+
+    qat_model.qconfig = torch.quantization.get_default_qat_qconfig('fbgemm') # fbgemm is better
     
     torch.quantization.prepare_qat(qat_model, inplace=True)
     print('Inverted Residual Block: After preparation for QAT, note fake-quantization modules \n',qat_model.features[1].conv)
     
+    qat_model.apply(torch.quantization.enable_observer)
+    qat_model.apply(torch.quantization.enable_fake_quant)
+
     num_train_batches = 20
     
     # QAT takes time and one needs to train over a few epochs.
     # Train and check accuracy after each epoch
-    for nepoch in range(8):
+    for nepoch in range(args.epochs):
         train_one_epoch(qat_model, criterion, optimizer, data_loader, torch.device('cpu'), num_train_batches)
+        lr_scheduler.step()
         if nepoch > 3:
             # Freeze quantizer parameters
             qat_model.apply(torch.quantization.disable_observer)
@@ -289,27 +307,67 @@ def run_qat(args):
         quantized_model = torch.quantization.convert(qat_model.eval(), inplace=False)
         quantized_model.eval()
         top1, top5 = evaluate(quantized_model,criterion, data_loader_test, neval_batches=num_eval_batches)
-        print('Epoch %d :Evaluation accuracy on %d images, %2.2f'%(nepoch, num_eval_batches * eval_batch_size, top1.avg))
+        print('Epoch %d :Evaluation accuracy on %d images, %2.2f'%(nepoch, num_eval_batches * args.eval_batch_size, top1.avg))
 
-def main(args):
-    run_fp32_baseline(args)
-    run_ptq_per_tensor(args)
-    run_ptq_per_channel(args)
-    run_qat(args)
-    run_benchmark()
-
-def get_args_parser():
+def get_args_parser(add_help=True):
     import argparse
     parser = argparse.ArgumentParser(description='PyTorch Quantized Test', add_help=add_help)
     parser.add_argument('--data-path',
-                        default='/data/imagenet',
+                        default='/data/pytorch/datasets/imagenet_training',
                         help='dataset')
     parser.add_argument('--workers',
                         default=16,
                         type=int,
                         metavar='N',
                         help='number of data loading workers (default: 16)')
+    parser.add_argument('--model-path',
+                        default='data',
+                        help='model checkpoint path')
+    parser.add_argument('--model-file',
+                        default='mobilenet_v2-b0353104.pth',
+                        help='specific model name')
+    '''
+    lr, momentum, wd, lr-step-size, lr-gamma are for QAT.
+    '''
+    parser.add_argument('--lr', default=0.1, type=float, help='initial learning rate')
+    parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
+                        help='momentum')
+    parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
+                        metavar='W', help='weight decay (default: 1e-4)',
+                        dest='weight_decay')
+    parser.add_argument('--lr-step-size', default=30, type=int, help='decrease lr every step-size epochs')
+    parser.add_argument('--lr-gamma', default=0.1, type=float, help='decrease lr by a factor of lr-gamma')
+
+    parser.add_argument('--backend',
+                        default='qnnpack',
+                        help='fbgemm(per-channel, BETTER) or qnnpack(per-tensor)')
+    parser.add_argument('--train-batch-size',
+                        default=32, type=int,
+                        help='batch size for training')
+    parser.add_argument('--eval-batch-size',
+                        default=50, type=int,
+                        help='batch size for evaluation')
+    parser.add_argument('--num_calibration_batches',
+                        default=32, type=int,
+                        help='batch size for calibration')
+    parser.add_argument('--num-observer-update-epochs',
+                        default=4, type=int, metavar='N',
+                        help='number of total epochs to update observers')
+    parser.add_argument('--num-batch-norm-update-epochs', default=3,
+                        type=int, metavar='N',
+                        help='number of total epochs to update batch norm stats')
+    parser.add_argument('--epochs', default=90, type=int, metavar='N',
+                        help='number of total epochs to run')
     return parser
+
+def main(args):
+    import pdb; pdb.set_trace()
+    prepare_data_loaders(args)
+    run_fp32_baseline(args)
+    run_ptq_per_tensor(args)
+    run_ptq_per_channel(args)
+    run_qat(args)
+    run_benchmark()
 
 if __name__ == "__main__":
     args = get_args_parser().parse_args()

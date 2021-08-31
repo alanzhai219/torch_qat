@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 from torch.quantization import QuantStub, DeQuantStub
 
 def _make_divisible(v, divisor, min_value=None):
